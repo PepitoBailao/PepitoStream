@@ -1,0 +1,58 @@
+# Dependencies
+node_modules/
+/.pnp
+.pnp.js
+
+# Testing
+/coverage
+
+# Next.js
+/.next/
+/out/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Production
+/build
+/dist
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Uploads
+/uploads
+/public/uploads
+
+# Cache
+.cache
+.eslintcache
+
+# Temporary files
+*.tmp
+*.temp
