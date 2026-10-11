@@ -214,10 +214,7 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 PepitoStream is for educational purposes only. Users are responsible for ensuring they have the right to stream all content. We do not host, provide, or distribute copyrighted content.
 
-## Support
 
-- 📧 Email: support@pepito-stream.com
-- 💬 Discord: [Join our server](https://discord.gg/pepito-stream)
 - 🐛 Issues: [GitHub Issues](https://github.com/PepitoBailao/PepitoStream/issues)
 
 ---
