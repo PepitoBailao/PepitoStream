@@ -1,188 +1,168 @@
-import { prisma } from '../db/connection';
-import { logger } from '../utils/logger';
-import { Source } from '@prisma/client';
+import axios from 'axios';
+import failoverService from '../../backend/src/services/failoverService';
 
-export interface StreamOption {
-  id: string;
-  provider: string;
-  link: string;
-  quality: string;
-  language: string;
-  isVerified: boolean;
-  latency: number | null;
-  fileSize: number | null;
-  seeders: number | null;
-  priority: number;
-  encoderInfo?: string;
-  score: number;
+interface TorBoxRelease {
+  name: string;
+  size: number;
+  seeders: number;
+  leechers: number;
+  file_index?: number;
+  instant_availability?: boolean;
+  magnet?: string;
+  hash?: string;
 }
 
-export class StreamService {
-  async getSources(contentId: string, episodeId?: string) {
-    try {
-      const where: any = {
-        isActive: true,
-        isVerified: true,
-      };
+interface StreamCopy {
+  provider: string;
+  url: string;
+  latency: number;
+}
 
-      if (episodeId) {
-        where.episodeId = episodeId;
-      } else {
-        where.contentId = contentId;
-      }
+interface SearchResult {
+  id: string;
+  title: string;
+  type: 'movie' | 'series';
+  year: number;
+  poster?: string;
+  rating?: number;
+  releases?: TorBoxRelease[];
+}
 
-      const sources = await prisma.source.findMany({
-        where,
-        orderBy: [
-          { priority: 'desc' },
-          { latency: 'asc' },
-          { seeders: 'desc' },
-        ],
+const TORBOX_API_BASE = process.env.TORBOX_API_URL || 'https://api.torbox.app/v1/';
+const TORBOX_API_KEY = process.env.TORBOX_API_KEY || '';
+const TORBOX_INSTANT_LIMIT_GB = 2;
+
+/**
+ * Search for content on TorBox (movies and anime).
+ * @param query - search query
+ * @returns array of search results
+ */
+export async function searchContent(query: string): Promise<SearchResult[]> {
+  if (!query || query.trim().length === 0) {
+    throw new Error('Search query cannot be empty');
+  }
+
+  try {
+    // Search TorBox for releases
+    const response = await axios.get(`${TORBOX_API_BASE}instant/search`, {
+      params: {
+        query: query.trim(),
+        token: TORBOX_API_KEY,
+      },
+      timeout: 10000,
+    });
+
+    const releases = response.data.data || [];
+
+    // Parse releases and group by title
+    const results: SearchResult[] = parseSearchResults(releases, query);
+
+    return results;
+  } catch (error) {
+    console.error('Search error:', error);
+    throw new Error('Failed to search for content');
+  }
+}
+
+/**
+ * Get stream URL for a specific release with failover support.
+ * @param releaseHash - torrent hash or name
+ * @returns stream URL
+ */
+export async function getStreamUrl(releaseHash: string): Promise<string> {
+  if (!releaseHash || releaseHash.trim().length === 0) {
+    throw new Error('Release hash cannot be empty');
+  }
+
+  try {
+    // Fetch available copies from TorBox
+    const instantResponse = await axios.get(`${TORBOX_API_BASE}instant/list`, {
+      params: {
+        token: TORBOX_API_KEY,
+        hash: releaseHash,
+      },
+      timeout: 5000,
+    });
+
+    const data = instantResponse.data.data || [];
+
+    // Build list of copies with metadata
+    const copies: StreamCopy[] = data
+      .filter((item: any) => {
+        const sizeGB = item.size / (1024 * 1024 * 1024);
+        return sizeGB <= TORBOX_INSTANT_LIMIT_GB && item.instant_availability;
+      })
+      .map((item: any, index: number) => ({
+        provider: item.provider || `Provider_${index}`,
+        url: item.instant_url || item.url,
+        latency: item.latency_ms || 0,
+      }));
+
+    if (copies.length === 0) {
+      throw new Error('No suitable copies found (size limit 2GB, instant availability required)');
+    }
+
+    // Use failover service to get stream URL
+    const streamUrl = await failoverService.getStreamWithFailover(copies);
+
+    return streamUrl;
+  } catch (error) {
+    console.error('Stream fetch error:', error);
+    throw new Error('Failed to get stream URL');
+  }
+}
+
+/**
+ * Parse TorBox search results into a unified format.
+ * Supports movies and anime.
+ */
+function parseSearchResults(releases: any[], query: string): SearchResult[] {
+  const groupedByTitle: Map<string, SearchResult> = new Map();
+
+  releases.forEach((release: TorBoxRelease, index: number) => {
+    const title = release.name.split(/[.\s-]/).slice(0, 2).join(' ');
+    const key = title.toLowerCase();
+
+    if (!groupedByTitle.has(key)) {
+      groupedByTitle.set(key, {
+        id: `${key}_${index}`,
+        title,
+        type: detectType(release.name),
+        year: extractYear(release.name),
+        rating: undefined,
+        releases: [],
       });
-
-      return this.scoreAndSort(sources);
-    } catch (error) {
-      logger.error('Get sources failed', { contentId, error: (error as Error).message });
-      throw error;
-    }
-  }
-
-  async getBestSource(contentId: string, episodeId?: string, userPrefs?: any) {
-    try {
-      const sources = await this.getSources(contentId, episodeId);
-      
-      if (sources.length === 0) {
-        throw new Error('No sources available');
-      }
-
-      // Filter by user preferences
-      let filtered = sources;
-      if (userPrefs) {
-        filtered = this.filterByPreferences(sources, userPrefs);
-      }
-
-      return filtered[0] || sources[0]; // Best source or fallback
-    } catch (error) {
-      logger.error('Get best source failed', { contentId, error: (error as Error).message });
-      throw error;
-    }
-  }
-
-  private scoreAndSort(sources: Source[]): StreamOption[] {
-    return sources
-      .map(source => ({
-        id: source.id,
-        provider: source.provider,
-        link: source.link,
-        quality: source.quality || 'unknown',
-        language: source.language || 'unknown',
-        isVerified: source.isVerified,
-        latency: source.latency,
-        fileSize: source.fileSize?.toString(),
-        seeders: source.seeders,
-        priority: source.priority,
-        encoderInfo: source.encoderInfo || undefined,
-        score: this.calculateScore(source),
-      }))
-      .sort((a, b) => b.score - a.score);
-  }
-
-  private calculateScore(source: Source): number {
-    let score = source.priority * 10;
-
-    // Latency bonus (lower is better)
-    if (source.latency) {
-      score += Math.max(0, 100 - source.latency / 10);
     }
 
-    // Seeders bonus
-    if (source.seeders && source.seeders > 0) {
-      score += Math.min(50, source.seeders / 2);
-    }
+    const result = groupedByTitle.get(key)!;
+    result.releases!.push(release);
+  });
 
-    // Verification bonus
-    if (source.isVerified) score += 30;
+  return Array.from(groupedByTitle.values());
+}
 
-    return score;
-  }
+/**
+ * Detect content type from release name (movie or series).
+ */
+function detectType(releaseName: string): 'movie' | 'series' {
+  const seriesIndicators = ['S\\d{2}E\\d{2}', 'Season', 'Episode', 'Complete'];
+  const isSeries = seriesIndicators.some((indicator) => new RegExp(indicator, 'i').test(releaseName));
+  return isSeries ? 'series' : 'movie';
+}
 
-  private filterByPreferences(sources: StreamOption[], prefs: any): StreamOption[] {
-    let filtered = [...sources];
+/**
+ * Extract year from release name.
+ */
+function extractYear(releaseName: string): number {
+  const yearMatch = releaseName.match(/\b(19|20)\d{2}\b/);
+  return yearMatch ? parseInt(yearMatch[0], 10) : new Date().getFullYear();
+}
 
-    // Filter by quality
-    if (prefs.quality) {
-      filtered = filtered.filter(s => s.quality.includes(prefs.quality));
-    }
-
-    // Filter by language
-    if (prefs.language) {
-      filtered = filtered.filter(s => 
-        s.language.toLowerCase() === prefs.language.toLowerCase()
-      );
-    }
-
-    // Filter by file size
-    if (prefs.maxFileSize) {
-      filtered = filtered.filter(s => 
-        !s.fileSize || parseInt(s.fileSize) <= prefs.maxFileSize
-      );
-    }
-
-    return filtered.length > 0 ? filtered : sources;
-  }
-
-  async recordStreamStart(userId: string, contentId: string, episodeId?: string) {
-    try {
-      await prisma.watchHistory.upsert({
-        where: {
-          userId_contentId: {
-            userId,
-            contentId,
-          },
-        },
-        update: {
-          watchedAt: new Date(),
-        },
-        create: {
-          userId,
-          contentId,
-          episodeId,
-          watchedAt: new Date(),
-        },
-      });
-
-      logger.debug('Stream started', { userId, contentId, episodeId });
-    } catch (error) {
-      logger.error('Record stream start failed', { error: (error as Error).message });
-    }
-  }
-
-  async updateStreamProgress(
-    userId: string,
-    contentId: string,
-    watched: number,
-    total: number,
-    episodeId?: string
-  ) {
-    try {
-      await prisma.watchHistory.update({
-        where: {
-          userId_contentId: {
-            userId,
-            contentId,
-          },
-        },
-        data: {
-          duration: watched,
-          totalDuration: total,
-          watchedAt: new Date(),
-          episodeId,
-        },
-      });
-
-      logger.debug('Stream progress updated', { userId, contentId, watched, total });
-    } catch (error) {
-      logger.error('Update stream progress failed', { error: (error as Error).message });
-    }
-  }
+/**
+ * Get failover status (for debugging and stats).
+ */
+export function getFailoverStatus() {
+  return {
+    blacklistedProviders: failoverService.getBlacklistStatus(),
+  };
 }
