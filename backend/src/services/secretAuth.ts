@@ -1,116 +1,155 @@
 import crypto from 'crypto';
-
-/**
- * Secret authentication service for one-time tokens.
- * Supports time-based expiration and IP-based rate limiting.
- */
+import NodeCache from 'node-cache';
+import { logger } from '../utils/logger';
 
 interface TokenRecord {
   token: string;
-  expiresAt: number;
-  attempts: number;
-  lastAttemptAt: number;
+  createdAt: number;
+  ip: string;
 }
 
-class SecretAuth {
-  private tokens: Map<string, TokenRecord> = new Map();
-  private ipAttempts: Map<string, { count: number; resetAt: number }> = new Map();
-  private tokenLength = 32;
-  private tokenTTL = 3600000; // 1 hour
-  private maxAttemptsPerIP = 10;
-  private ipAttemptWindow = 900000; // 15 minutes
+interface RateLimitRecord {
+  count: number;
+  resetAt: number;
+}
+
+export class SecretAuthService {
+  private tokenCache: NodeCache;
+  private rateLimitCache: NodeCache;
+  private readonly TOKEN_TTL = 3600; // 1 hour
+  private readonly RATE_LIMIT_WINDOW = 900; // 15 minutes
+  private readonly MAX_REQUESTS_PER_IP = 10;
+
+  constructor() {
+    this.tokenCache = new NodeCache({ stdTTL: this.TOKEN_TTL, checkperiod: 600 });
+    this.rateLimitCache = new NodeCache({ stdTTL: this.RATE_LIMIT_WINDOW, checkperiod: 120 });
+
+    logger.info('SecretAuthService initialized', {
+      tokenTTL: this.TOKEN_TTL,
+      rateLimitWindow: this.RATE_LIMIT_WINDOW,
+      maxRequestsPerIp: this.MAX_REQUESTS_PER_IP,
+    });
+  }
 
   /**
-   * Generate a new secret token (random 32 bytes, hex-encoded).
+   * Generate a cryptographically secure token
    */
   generateToken(): string {
-    const token = crypto.randomBytes(this.tokenLength).toString('hex');
-    const expiresAt = Date.now() + this.tokenTTL;
-    this.tokens.set(token, {
-      token,
-      expiresAt,
-      attempts: 0,
-      lastAttemptAt: 0,
-    });
+    const token = crypto.randomBytes(32).toString('hex');
+    logger.debug('Token generated', { tokenLength: token.length });
     return token;
   }
 
   /**
-   * Validate a token against a provided value using constant-time comparison.
-   * @param providedToken - token from request
-   * @param storedToken - token from storage
-   * @returns true if tokens match and token is not expired
+   * Store token with IP tracking
    */
-  validateToken(providedToken: string, storedToken: string): boolean {
-    // Constant-time comparison to prevent timing attacks
-    const provided = Buffer.from(providedToken || '');
-    const stored = Buffer.from(storedToken || '');
+  storeToken(token: string, ip: string): void {
+    try {
+      const record: TokenRecord = {
+        token,
+        createdAt: Date.now(),
+        ip,
+      };
 
-    if (provided.length !== stored.length) {
-      return false;
+      this.tokenCache.set(token, record, this.TOKEN_TTL);
+      logger.info('Token stored', { token: token.substring(0, 8) + '...', ip, ttl: this.TOKEN_TTL });
+    } catch (error) {
+      logger.error('Failed to store token', { error: (error as Error).message, ip });
+      throw new Error('Token storage failed');
     }
-
-    let mismatch = 0;
-    for (let i = 0; i < provided.length; i++) {
-      mismatch |= provided[i] ^ stored[i];
-    }
-
-    const tokenRecord = this.tokens.get(storedToken);
-    if (!tokenRecord) {
-      return false;
-    }
-
-    if (Date.now() > tokenRecord.expiresAt) {
-      this.tokens.delete(storedToken);
-      return false;
-    }
-
-    return mismatch === 0;
   }
 
   /**
-   * Check if an IP is rate-limited.
-   * @param ip - client IP address
-   * @returns true if rate-limited, false otherwise
+   * Validate token with timing-safe comparison
    */
-  isRateLimited(ip: string): boolean {
-    const record = this.ipAttempts.get(ip);
-    if (!record) {
-      this.ipAttempts.set(ip, { count: 1, resetAt: Date.now() + this.ipAttemptWindow });
-      return false;
-    }
-
-    if (Date.now() > record.resetAt) {
-      record.count = 1;
-      record.resetAt = Date.now() + this.ipAttemptWindow;
-      return false;
-    }
-
-    record.count++;
-    return record.count > this.maxAttemptsPerIP;
-  }
-
-  /**
-   * Cleanup expired tokens (call periodically, e.g., every 10 minutes).
-   */
-  cleanupExpiredTokens(): void {
-    const now = Date.now();
-    for (const [token, record] of this.tokens.entries()) {
-      if (now > record.expiresAt) {
-        this.tokens.delete(token);
+  validateToken(providedToken: string, ip: string): boolean {
+    try {
+      if (!providedToken || typeof providedToken !== 'string') {
+        logger.warn('Invalid token format', { ip, tokenType: typeof providedToken });
+        return false;
       }
+
+      const stored = this.tokenCache.get(providedToken) as TokenRecord | undefined;
+
+      if (!stored) {
+        logger.warn('Token not found or expired', { token: providedToken.substring(0, 8) + '...', ip });
+        return false;
+      }
+
+      // Timing-safe comparison
+      const isValid = crypto.timingSafeEqual(
+        Buffer.from(providedToken),
+        Buffer.from(stored.token)
+      );
+
+      if (!isValid) {
+        logger.warn('Token mismatch', { ip, storedIp: stored.ip });
+        return false;
+      }
+
+      // Verify IP matches (optional but recommended)
+      if (stored.ip !== ip) {
+        logger.warn('Token IP mismatch', { ip, storedIp: stored.ip });
+        return false;
+      }
+
+      logger.debug('Token validated successfully', { token: providedToken.substring(0, 8) + '...', ip });
+      return true;
+    } catch (error) {
+      logger.error('Token validation error', { error: (error as Error).message, ip });
+      return false;
     }
   }
 
   /**
-   * Get token statistics (for debugging).
+   * Rate limiting by IP
+   */
+  checkRateLimit(ip: string): boolean {
+    try {
+      const record = this.rateLimitCache.get(ip) as RateLimitRecord | undefined;
+
+      if (!record) {
+        this.rateLimitCache.set(ip, { count: 1, resetAt: Date.now() + this.RATE_LIMIT_WINDOW });
+        logger.debug('Rate limit counter initialized', { ip });
+        return true;
+      }
+
+      if (record.count >= this.MAX_REQUESTS_PER_IP) {
+        logger.warn('Rate limit exceeded', { ip, count: record.count, limit: this.MAX_REQUESTS_PER_IP });
+        return false;
+      }
+
+      record.count++;
+      this.rateLimitCache.set(ip, record);
+      logger.debug('Rate limit incremented', { ip, count: record.count });
+      return true;
+    } catch (error) {
+      logger.error('Rate limit check error', { error: (error as Error).message, ip });
+      return false;
+    }
+  }
+
+  /**
+   * Revoke token
+   */
+  revokeToken(token: string): void {
+    try {
+      this.tokenCache.del(token);
+      logger.info('Token revoked', { token: token.substring(0, 8) + '...' });
+    } catch (error) {
+      logger.error('Failed to revoke token', { error: (error as Error).message });
+    }
+  }
+
+  /**
+   * Get stats
    */
   getStats() {
     return {
-      activeTokens: this.tokens.size,
-      trackedIPs: this.ipAttempts.size,
+      activeTokens: this.tokenCache.keys().length,
+      rateLimitEntries: this.rateLimitCache.keys().length,
     };
   }
 }
 
-export default new SecretAuth();
+export const secretAuthService = new SecretAuthService();
