@@ -1,0 +1,292 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                    String     @id @default(cuid())
+  email                 String     @unique
+  username              String     @unique
+  passwordHash          String
+  avatar                String?
+  role                  Role       @default(USER)
+  isActive              Boolean    @default(true)
+  emailVerified         Boolean    @default(false)
+  twoFactorEnabled      Boolean    @default(false)
+  twoFactorSecret       String?
+  lastLogin             DateTime?
+  preferences           UserPreferences?
+  watchHistory          WatchHistory[]
+  favorites             Favorite[]
+  lists                 List[]
+  reviews               Review[]
+  createdAt             DateTime   @default(now())
+  updatedAt             DateTime   @updatedAt
+  
+  @@index([email])
+  @@index([username])
+}
+
+model UserPreferences {
+  id                    String     @id @default(cuid())
+  userId                String     @unique
+  user                  User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  preferredLanguage     String     @default("fr")
+  preferredSubtitle     String     @default("fr")
+  quality               String     @default("1080p")
+  autoPlay              Boolean    @default(true)
+  theme                 String     @default("dark")
+  notificationsEnabled  Boolean    @default(true)
+  createdAt             DateTime   @default(now())
+  updatedAt             DateTime   @updatedAt
+}
+
+model Content {
+  id                    String     @id @default(cuid())
+  title                 String
+  slug                  String     @unique
+  type                  ContentType
+  description           String?
+  image                 String?
+  backdrop              String?
+  rating                Float?
+  releaseDate           DateTime?
+  genres                String[]   @default([])
+  directors             String[]   @default([])
+  cast                  String[]   @default([])
+  duration              Int?       // en minutes
+  isAnime               Boolean    @default(false)
+  animeInfo             AnimeInfo?
+  episodes              Episode[]
+  sources               Source[]
+  watchHistory          WatchHistory[]
+  favorites             Favorite[]
+  reviews               Review[]
+  relatedContent        ContentRelation[] @relation("related")
+  relatedFrom           ContentRelation[] @relation("relatedFrom")
+  createdAt             DateTime   @default(now())
+  updatedAt             DateTime   @updatedAt
+  lastIndexed           DateTime   @default(now())
+  
+  @@index([type])
+  @@index([isAnime])
+  @@index([releaseDate])
+  @@fulltext([title, description])
+}
+
+model AnimeInfo {
+  id                    String     @id @default(cuid())
+  contentId             String     @unique
+  content               Content    @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  malId                 String?
+  anilistId             String?
+  totalEpisodes         Int?
+  status                String?    // ongoing, completed, upcoming
+  season                String?
+  year                  Int?
+  studios               String[]   @default([])
+  createdAt             DateTime   @default(now())
+  updatedAt             DateTime   @updatedAt
+}
+
+model Episode {
+  id                    String     @id @default(cuid())
+  contentId             String
+  content               Content    @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  episodeNumber         Float
+  seasonNumber          Int?
+  title                 String?
+  description           String?
+  image                 String?
+  airDate               DateTime?
+  sources               Source[]
+  createdAt             DateTime   @default(now())
+  updatedAt             DateTime   @updatedAt
+  
+  @@unique([contentId, episodeNumber, seasonNumber])
+  @@index([contentId])
+}
+
+model Source {
+  id                    String     @id @default(cuid())
+  contentId             String?
+  content               Content?   @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  episodeId             String?
+  episode               Episode?   @relation(fields: [episodeId], references: [id], onDelete: Cascade)
+  provider              String     // ygg, c411, tr4ker, etc
+  link                  String
+  quality              String?    // 1080p, 720p, 480p, etc
+  language             String?    // vf, vo, vostfr, etc
+  codec                String?    // h264, h265, etc
+  isVerified           Boolean    @default(false)
+  verificationDate     DateTime?
+  isActive             Boolean    @default(true)
+  latency              Int?       // en ms
+  fileSize             BigInt?    // en bytes
+  seeders              Int?
+  leechers             Int?
+  lastChecked          DateTime   @default(now())
+  encoderInfo          String?    // groupe qui a encodé
+  priority             Int        @default(0)
+  createdAt            DateTime   @default(now())
+  updatedAt            DateTime   @updatedAt
+  
+  @@index([contentId])
+  @@index([episodeId])
+  @@index([provider])
+  @@index([isVerified])
+  @@index([isActive])
+}
+
+model ContentRelation {
+  id                    String     @id @default(cuid())
+  contentId             String
+  content               Content    @relation("related", fields: [contentId], references: [id], onDelete: Cascade)
+  relatedContentId      String
+  relatedContent        Content    @relation("relatedFrom", fields: [relatedContentId], references: [id], onDelete: Cascade)
+  relationType          String     // sequel, prequel, spinoff, adaptation, etc
+  
+  @@unique([contentId, relatedContentId])
+  @@index([contentId])
+}
+
+model WatchHistory {
+  id                    String     @id @default(cuid())
+  userId                String
+  user                  User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  contentId             String
+  content               Content    @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  episodeId             String?
+  watchedAt             DateTime   @default(now())
+  duration              Int?       // secondes regardées
+  totalDuration         Int?       // durée totale en secondes
+  
+  @@index([userId])
+  @@index([contentId])
+  @@index([watchedAt])
+  @@unique([userId, contentId])
+}
+
+model Favorite {
+  id                    String     @id @default(cuid())
+  userId                String
+  user                  User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  contentId             String
+  content               Content    @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  createdAt             DateTime   @default(now())
+  
+  @@index([userId])
+  @@unique([userId, contentId])
+}
+
+model List {
+  id                    String     @id @default(cuid())
+  userId                String
+  user                  User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name                  String
+  description           String?
+  isPublic              Boolean    @default(false)
+  content               ListContent[]
+  createdAt             DateTime   @default(now())
+  updatedAt             DateTime   @updatedAt
+  
+  @@index([userId])
+}
+
+model ListContent {
+  id                    String     @id @default(cuid())
+  listId                String
+  list                  List       @relation(fields: [listId], references: [id], onDelete: Cascade)
+  contentId             String
+  order                 Int
+  createdAt             DateTime   @default(now())
+  
+  @@unique([listId, contentId])
+}
+
+model Review {
+  id                    String     @id @default(cuid())
+  userId                String
+  user                  User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  contentId             String
+  content               Content    @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  rating                Int        // 1-10
+  comment               String?
+  helpful               Int        @default(0)
+  createdAt             DateTime   @default(now())
+  updatedAt             DateTime   @updatedAt
+  
+  @@index([userId])
+  @@index([contentId])
+  @@unique([userId, contentId])
+}
+
+model ScraperJob {
+  id                    String     @id @default(cuid())
+  provider              String
+  type                  String     // search, index, verify
+  status                String     @default("pending") // pending, running, completed, failed
+  query                 String?
+  result                Json?
+  error                 String?
+  attempts              Int        @default(0)
+  maxAttempts           Int        @default(3)
+  nextRetry             DateTime?
+  startedAt             DateTime?
+  completedAt           DateTime?
+  createdAt             DateTime   @default(now())
+  updatedAt             DateTime   @updatedAt
+  
+  @@index([provider])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model VerificationJob {
+  id                    String     @id @default(cuid())
+  sourceId              String
+  status                String     @default("pending") // pending, running, completed, failed
+  isValid               Boolean?
+  latency               Int?
+  error                 String?
+  attempts              Int        @default(0)
+  nextRetry             DateTime?
+  startedAt             DateTime?
+  completedAt           DateTime?
+  createdAt             DateTime   @default(now())
+  updatedAt             DateTime   @updatedAt
+  
+  @@index([status])
+  @@index([createdAt])
+}
+
+model SearchCache {
+  id                    String     @id @default(cuid())
+  query                 String     @unique
+  results               Json
+  ttl                   DateTime
+  createdAt             DateTime   @default(now())
+  
+  @@index([query])
+  @@index([ttl])
+}
+
+enum Role {
+  USER
+  MODERATOR
+  ADMIN
+}
+
+enum ContentType {
+  MOVIE
+  TV_SERIES
+  ANIME
+  ANIME_MOVIE
+}
