@@ -1,0 +1,19 @@
+# Global owners
+* @PepitoBailao
+
+# Backend code
+/src @PepitoBailao
+/prisma @PepitoBailao
+/tests @PepitoBailao
+
+# Frontend code
+/frontend/src @PepitoBailao
+
+# Infrastructure
+/Dockerfile @PepitoBailao
+/docker-compose.yml @PepitoBailao
+/.github/workflows @PepitoBailao
+
+# Configuration
+/package.json @PepitoBailao
+/tsconfig.json @PepitoBailao
