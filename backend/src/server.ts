@@ -1,70 +1,75 @@
-import express, { Express, Request, Response, NextFunction } from 'express';
-import 'express-async-errors';
+import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import compression from 'compression';
-import logger from './utils/logger';
+import { logger } from './utils/logger';
+import { secretAuthMiddleware, generateTokenRoute, getAuthStatsRoute } from './middleware/secretAuth';
 import { errorHandler } from './middleware/errorHandler';
-import { rateLimiter } from './middleware/rateLimiter';
-import authRoutes from './routes/auth';
-import searchRoutes from './routes/search';
-import contentRoutes from './routes/content';
-import streamRoutes from './routes/stream';
-import adminRoutes from './routes/admin';
-import healthRoutes from './routes/health';
-import { initializeWorkers } from './workers';
 
-const app: Express = express();
-const PORT = process.env.PORT || 3001;
+const app = express();
+const PORT = process.env.PORT || 5000;
 
-// Middleware
+// Security middleware
 app.use(helmet());
+app.use(cors());
 app.use(compression());
-app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:3000',
-  credentials: true
-}));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ limit: '10mb', extended: true }));
 
-// Request logging
-app.use((req: Request, res: Response, next: NextFunction) => {
-  logger.info(`${req.method} ${req.path}`);
+// Logging middleware
+app.use((req, res, next) => {
+  logger.debug('Incoming request', {
+    method: req.method,
+    path: req.path,
+    ip: req.ip,
+    userAgent: req.headers['user-agent'],
+  });
   next();
 });
 
-// Rate limiting
-app.use(rateLimiter);
+// Public routes (no auth required)
+app.post('/api/auth/generate', generateTokenRoute);
+app.get('/api/auth/stats', getAuthStatsRoute);
 
-// Routes
-app.use('/api/auth', authRoutes);
-app.use('/api/search', searchRoutes);
-app.use('/api/content', contentRoutes);
-app.use('/api/stream', streamRoutes);
-app.use('/api/admin', adminRoutes);
-app.use('/api/health', healthRoutes);
-
-// 404 handler
-app.use((req: Request, res: Response) => {
-  res.status(404).json({ error: 'Route not found' });
+// Health check
+app.get('/health', (req, res) => {
+  res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-// Error handler (must be last)
+// Protected routes (require secret token)
+app.use('/api/stream', secretAuthMiddleware);
+app.use('/api/search', secretAuthMiddleware);
+
+// Placeholder routes (will be connected to actual services)
+app.post('/api/stream/search', (req, res) => {
+  logger.info('Search request', { body: req.body });
+  res.json({ message: 'Search endpoint - connect to searchService' });
+});
+
+app.post('/api/stream/get', (req, res) => {
+  logger.info('Stream request', { body: req.body });
+  res.json({ message: 'Stream endpoint - connect to streamService' });
+});
+
+// Error handling middleware
 app.use(errorHandler);
 
-// Initialize background workers
-initializeWorkers();
+// 404 handler
+app.use((req, res) => {
+  logger.warn('Route not found', { method: req.method, path: req.path });
+  res.status(404).json({
+    error: 'Not found',
+    message: `Route ${req.method} ${req.path} not found`,
+  });
+});
 
 // Start server
 app.listen(PORT, () => {
-  logger.info(`✅ PepitoStream API running on port ${PORT}`);
-  logger.info(`🌐 Environment: ${process.env.NODE_ENV || 'development'}`);
-});
-
-// Graceful shutdown
-process.on('SIGTERM', () => {
-  logger.info('SIGTERM received, shutting down gracefully...');
-  process.exit(0);
+  logger.info('Server started', {
+    port: PORT,
+    environment: process.env.NODE_ENV || 'development',
+    nodeVersion: process.version,
+  });
 });
 
 export default app;
