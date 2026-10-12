@@ -1,0 +1,127 @@
+input {
+  tcp {
+    port => 5000
+    codec => json
+  }
+
+  udp {
+    port => 5000
+    codec => json
+  }
+
+  http {
+    port => 8080
+    codec => json
+  }
+
+  stdin {
+    codec => json
+  }
+}
+
+filter {
+  if [type] == "api_logs" {
+    grok {
+      match => { "message" => "%{COMMONAPACHELOG}" }
+    }
+    
+    mutate {
+      convert => { "response" => "integer" }
+      convert => { "bytes" => "integer" }
+      convert => { "response_time" => "float" }
+    }
+
+    if [response] >= 400 {
+      mutate {
+        add_tag => ["error"]
+      }
+    }
+  }
+
+  if [type] == "stream_logs" {
+    mutate {
+      convert => { "bitrate_kbps" => "integer" }
+      convert => { "latency_ms" => "integer" }
+      convert => { "buffer_events" => "integer" }
+    }
+
+    if [latency_ms] > 5000 {
+      mutate {
+        add_tag => ["high_latency"]
+      }
+    }
+
+    if [bitrate_kbps] < 500 {
+      mutate {
+        add_tag => ["low_bitrate"]
+      }
+    }
+  }
+
+  if [type] == "metrics" {
+    mutate {
+      convert => { "value" => "float" }
+    }
+  }
+
+  date {
+    match => [ "timestamp", "ISO8601" ]
+    target => "@timestamp"
+  }
+
+  useragent {
+    source => "user_agent"
+    target => "ua"
+  }
+
+  geoip {
+    source => "client_ip"
+    target => "geoip"
+  }
+}
+
+output {
+  if [@metadata][index_type] == "logs" {
+    elasticsearch {
+      hosts => ["elasticsearch:9200"]
+      user => "elastic"
+      password => "${ELASTICSEARCH_PASSWORD}"
+      index => "pepitostream-logs-%{+YYYY.MM.dd}"
+      document_type => "_doc"
+    }
+  }
+
+  if [@metadata][index_type] == "metrics" {
+    elasticsearch {
+      hosts => ["elasticsearch:9200"]
+      user => "elastic"
+      password => "${ELASTICSEARCH_PASSWORD}"
+      index => "pepitostream-metrics-%{+YYYY.MM.dd}"
+      document_type => "_doc"
+    }
+  }
+
+  if [@metadata][index_type] == "traces" {
+    elasticsearch {
+      hosts => ["elasticsearch:9200"]
+      user => "elastic"
+      password => "${ELASTICSEARCH_PASSWORD}"
+      index => "pepitostream-traces-%{+YYYY.MM.dd}"
+      document_type => "_doc"
+    }
+  }
+
+  if [tags] {
+    elasticsearch {
+      hosts => ["elasticsearch:9200"]
+      user => "elastic"
+      password => "${ELASTICSEARCH_PASSWORD}"
+      index => "pepitostream-alerts-%{+YYYY.MM.dd}"
+      document_type => "_doc"
+    }
+  }
+
+  stdout {
+    codec => rubydebug
+  }
+}
