@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import express from 'express';
-import { getRouter } from '@stremio/stremio-addon-sdk';
+import { getRouter } from 'stremio-addon-sdk';
 import { builder } from './addon.js';
 
 const app = express();

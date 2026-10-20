@@ -1,4 +1,4 @@
-import { addonBuilder } from '@stremio/stremio-addon-sdk';
+import { addonBuilder } from 'stremio-addon-sdk';
 
 export const manifest = {
   id: 'me.pepitobailao.pepitostream',
